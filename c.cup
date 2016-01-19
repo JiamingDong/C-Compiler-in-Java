@@ -1,0 +1,701 @@
+import java.io.*;
+import java_cup.runtime.ComplexSymbolFactory;
+import java_cup.runtime.Symbol;
+import java_cup.runtime.ComplexSymbolFactory.Location;
+import java_cup.runtime.ScannerBuffer;
+import java.util.*;
+ 
+
+parser code {:
+	class Parameter{
+		int offset;
+		String returnType;
+		String value;
+		boolean isFunction;
+        int vnum;
+		public Parameter(int off, String t, boolean is){
+			offset = off;
+			returnType = t;
+			isFunction = is;
+            vnum = 0;
+		}
+		public Parameter(int off, String t, boolean is, int v){
+			offset = off;
+			returnType = t;
+			isFunction = is;
+			vnum = v;
+		}
+	}
+	static HashMap<String,HashMap<String, Parameter>> functionMaps; 
+	static HashMap<String, Parameter> globalMaps; 
+	static int scope;
+	static int ncount;
+    static BufferedWriter out;
+    static Stack<Integer> dowhiles;
+	static String ptype;
+	static Stack<String> cf;
+	static Stack<String> fname;
+	static Stack<Integer> offset;
+	static int goffset;
+	static boolean shouldRet;
+    public void syntax_error(Symbol cur_token){
+		System.err.println("Syntax error at "+cur_token);
+    }
+    public Parser(Lexer lex, ComplexSymbolFactory sf) {
+		super(lex,sf);
+    }
+
+    public static void main(String args[]) {
+	    for(int index = 0; index < args.length; index++){
+			try {
+			    ComplexSymbolFactory csf = new ComplexSymbolFactory();
+			    ScannerBuffer lexer = new ScannerBuffer(new Lexer(new BufferedReader(new FileReader(args[index])),csf));
+			    Parser p = new Parser(lexer,csf);
+			    scope = 0;
+			    ptype = "";
+			    shouldRet = true;
+			    cf = new Stack<String>();
+			    fname = new Stack<String>();
+                dowhiles = new Stack<Integer>();
+			    offset = new Stack<Integer>();
+    			offset.push(0);
+			    goffset = 0;
+			    ncount = 0;
+			    functionMaps = new HashMap<String,HashMap<String, Parameter>>();
+			    globalMaps = new HashMap<String, Parameter>();
+                File ff = new File(args[index].substring(0, args[index].length() - 1) + "s");
+                if(ff.exists()) ff.delete();
+                ff.createNewFile();
+                out = new BufferedWriter(new FileWriter(ff));
+			    p.parse();
+                out.flush();
+                out.close();
+			} catch (Exception e) {
+			    System.out.println("Error: File " + args[index] + " has invalid sentences.\n");
+			}
+		} 
+    }
+:};
+
+terminal IDENT, CONST_INT, CONST_STRING, SHIFTLEFT, SHIFTRIGHT, INF, SUP, EGAL, DIFF, EXTERN, INT, IF, ELSE, WHILE, DO, FOR, RETURN,
+    SEMI, CURLYL, CURLYR, COMMA, ASSIGN, PARAL, PARAR, MINUS, PLUS, MULTI, DIV, MODULO, INFEQUAL, SUPEQUAL, STRING;
+
+non terminal program;
+non terminal external_declaration;
+non terminal function_definition;
+non terminal decl_glb_fct;
+non terminal declaration;
+non terminal type;
+non terminal declarator_list;
+non terminal declaration_list;
+non terminal declarator;
+non terminal function_declarator;
+non terminal parameter_list;
+non terminal parameter_declaration;
+non terminal instruction;
+non terminal expression_instruction;
+non terminal assignment;
+non terminal compound_instruction;
+non terminal block_start;
+non terminal block_end;
+non terminal instruction_list;
+non terminal select_instruction;
+non terminal cond_instruction;
+non terminal iteration_instruction;
+non terminal jump_instruction;
+non terminal condition;
+non terminal comparison_operator;
+non terminal expression;
+non terminal expression_additive;
+non terminal expression_multiplicative;
+non terminal unary_expression;
+non terminal expression_postfixee;
+non terminal argument_expression_list;
+non terminal primary_expression;
+
+precedence nonassoc ELSE;
+
+
+
+start with program;
+
+program ::=  
+external_declaration 
+| program external_declaration 
+;
+
+external_declaration ::=  
+declaration 	// Declaration Global			
+| EXTERN declaration // Set Extern attribute			
+| function_definition 
+;
+
+function_definition ::=  
+type function_declarator:id decl_glb_fct  {:
+    System.out.println(".globl _" + id.toString() + "\n_" + id.toString() + ":");
+    out.write(".globl _" + id.toString() + "\n_" + id.toString() + ":\n");
+    if(id.toString().equals("main")) {
+        System.out.println("movl %ebp, %ebx");
+        out.write("movl %ebp, %ebx\n");
+    }
+    System.out.println("pushl %ebp");
+    System.out.println("movl %esp, %ebp");
+    System.out.println("subl $40, %esp");
+    out.write("pushl %ebp\n");
+    out.write("movl %esp, %ebp\n");
+    out.write("subl $40, %esp\n");
+    offset.pop();
+    offset.push(0);
+  :} 
+  compound_instruction 
+  {:
+    offset.pop();
+    offset.push(0);
+    fname.pop();
+    if(shouldRet) {
+    System.out.println("leave");
+    System.out.println("ret");
+    out.write("leave\n");
+    out.write("ret\n");
+    }
+  :}  // generate code function
+  
+;
+
+decl_glb_fct ::=
+// Get function name - Create a spot to store the function - set attributes
+;
+
+declaration ::=  
+type declarator_list SEMI 
+;
+
+type ::=  
+INT		{:ptype = "int";:}			// set INT
+| STRING {:ptype = "String";:}						// set String
+;
+
+declarator_list ::=  
+declarator 				// Propagate code
+| declarator_list COMMA declarator 	
+;
+
+declaration_list ::=  
+declaration 				// Set locals
+| declaration_list declaration  	// Set locals
+;
+
+declarator ::=  
+IDENT:id {:
+    if(scope == 0) { //global or functions
+        goffset -= 4;
+        globalMaps.put(id.toString(), new Parameter(goffset, ptype, false));
+        
+    } else {  //local variables
+        int i_off = offset.pop();
+        i_off -= 4;
+        offset.push(i_off);
+        HashMap<String, Parameter> hm = functionMaps.get(fname.peek()); 
+        hm.put(id.toString(), new Parameter(offset.peek(), ptype, false));
+        
+    }
+:}			// Create Variable
+| function_declarator 	       // Create Function
+;
+
+function_declarator ::=  
+IDENT:id PARAL{:
+    RESULT = id;
+    if (!globalMaps.containsKey(id.toString())) {
+       globalMaps.put(id.toString(), new Parameter(0, ptype, true, 0));
+    }
+    fname.push(id.toString());
+    
+    if(!functionMaps.containsKey(id.toString())) {
+	   functionMaps.put(id.toString(), new HashMap<String, Parameter>());
+    } 
+
+    
+:} PARAR 				// Create function name
+| IDENT:id PARAL
+{:
+    RESULT = id;
+    if (!globalMaps.containsKey(id.toString())) {
+       globalMaps.put(id.toString(), new Parameter(0, ptype, true));
+    }    fname.push(id.toString());
+    if(!functionMaps.containsKey(id.toString())) {
+	    functionMaps.put(id.toString(), new HashMap<String, Parameter>());
+    } 
+
+:}  parameter_list {:
+    int tin = offset.peek();
+    tin += 12;
+    for (Map.Entry<String, Parameter> entry : functionMaps.get(id.toString()).entrySet()) {
+        Parameter x = entry.getValue();
+        x.offset = tin - x.offset;
+    }
+    Parameter t = globalMaps.get(id.toString());
+    t.vnum = Math.abs(offset.pop() / 4);
+    offset.push(0);
+    :}PARAR 	// Create partial function 
+;
+
+parameter_list ::=  
+parameter_declaration 			
+| parameter_list COMMA parameter_declaration // Insert parameters
+;
+
+parameter_declaration ::=  
+type IDENT:id {:
+    HashMap<String, Parameter> hm = functionMaps.get(fname.peek());
+    int i_off = offset.pop();
+    i_off += 4;
+    offset.push(i_off);
+    if (!hm.containsKey(id.toString())) {
+       hm.put(id.toString(), new Parameter(offset.peek() + 4, ptype, false));
+    }
+:} // Type declaration
+;
+
+instruction ::=  
+SEMI  
+| compound_instruction 
+| expression_instruction 
+| iteration_instruction 
+| select_instruction 
+| jump_instruction
+;
+
+expression_instruction ::=              
+expression SEMI   
+| assignment SEMI 
+;
+
+assignment ::=  
+IDENT:id ASSIGN expression
+{:
+    System.out.println("popl %eax");
+    out.write("popl %eax\n");
+    HashMap<String, Parameter> hm = functionMaps.get(fname.peek());
+    if(hm.containsKey(id.toString())){
+        Parameter t = hm.get(id.toString()); 
+        int x = t.offset;
+        System.out.println("movl %eax, " + x + "(%ebp)");
+        out.write("movl %eax, " + x + "(%ebp)\n");
+    } else {
+        if(globalMaps.containsKey(id.toString())){
+            Parameter t = globalMaps.get(id.toString());
+            System.out.println("movl %eax, " + t.offset + "(%ebx)");
+            out.write("movl %eax, " + t.offset + "(%ebx)\n");
+        }
+    }
+:} 
+;
+
+compound_instruction ::=  
+block_start declaration_list instruction_list block_end 
+| block_start declaration_list block_end 
+| block_start instruction_list block_end 
+| block_start block_end 
+;
+
+
+block_start ::=  
+CURLYL {:scope++;:} // Init your hash table - symbol table
+;
+
+block_end ::=  
+CURLYR {:scope--;:}// Empty hash table
+;
+
+instruction_list ::=  
+instruction 
+| instruction_list instruction 
+;
+
+select_instruction ::=  
+cond_instruction:c instruction {:
+System.out.println("END1" + c + ":");
+out.write("END1" + c + ":\n");
+:}
+| cond_instruction:c instruction ELSE {:
+System.out.println("jmp END2" + c);
+System.out.println("END1" + c + ":");
+out.write("jmp END2" + c + "\n");
+out.write("END1" + c + ":\n");
+:} instruction {:
+System.out.println("END2" + c + ":");
+out.write("END2" + c + ":\n");
+:}
+;
+
+cond_instruction ::=  
+IF PARAL condition:comp_op {:
+    System.out.println("popl %eax");
+    System.out.println("popl %edx");
+    out.write("popl %eax\n");
+    out.write("popl %edx\n");
+    String ifsym = "IF_" + ncount;
+    String elsym = "END1" + ncount;
+    System.out.println(ifsym + ":");
+    System.out.println("cmpl %edx, %eax");
+    out.write(ifsym + ":\n");
+    out.write("cmpl %edx, %eax\n");
+    if (comp_op.toString().equals("==")) {
+        System.out.println("je " + elsym);
+        out.write("je " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("!=")) {
+        System.out.println("jne " + elsym);
+        out.write("jne " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<")) {
+        System.out.println("jl " + elsym);
+        out.write("jl " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">")) {
+        System.out.println("jg " + elsym);
+        out.write("jg " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<=")) {
+        System.out.println("jle " + elsym);
+        out.write("jle " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">=")) {
+        System.out.println("jge " + elsym);
+        out.write("jge " + elsym + "\n");
+    }
+    RESULT = ncount;
+    ncount++;:} PARAR 
+;
+
+iteration_instruction ::=  
+WHILE PARAL{:
+    dowhiles.push(ncount);
+    ncount++;
+    String ifsym = "WHILE_" + dowhiles.peek();
+    System.out.println(ifsym + ":");
+    out.write(ifsym + ":\n");
+    :} condition:comp_op PARAR{:
+    String ifsym = "WHILE_" + dowhiles.peek();
+    String elsym = "WHILEEND" + dowhiles.peek();
+    System.out.println("popl %eax");
+    System.out.println("popl %edx");
+    System.out.println("cmpl %edx, %eax");
+    out.write("popl %eax\n");
+    out.write("popl %edx\n");
+    out.write("cmpl %edx, %eax\n");
+    if (comp_op.toString().equals("==")) {
+        System.out.println("je " + elsym);
+        out.write("je " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("!=")) {
+        System.out.println("jne " + elsym);
+        out.write("jne " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<")) {
+        System.out.println("jl " + elsym);
+        out.write("jl " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">")) {
+        System.out.println("jg " + elsym);
+        out.write("jg " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<=")) {
+        System.out.println("jle " + elsym);
+        out.write("jle " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">=")) {
+        System.out.println("jge " + elsym);
+        out.write("jge " + elsym + "\n");
+    }
+    :} instruction {:
+    System.out.println("jmp WHILE_" + dowhiles.peek());
+    System.out.println("WHILEEND" + dowhiles.peek() + ":");
+    out.write("jmp WHILE_" + dowhiles.peek() + "\n");
+    out.write("WHILEEND" + dowhiles.pop() + ":\n");
+    :}// Handle while loop
+| DO {:
+    System.out.println("DO_" + ncount + ":");
+    out.write("DO_" + ncount + ":\n");
+    dowhiles.push(ncount);
+    ncount++;
+    :} instruction WHILE PARAL  condition:comp_op {:
+    System.out.println("popl %eax");
+    System.out.println("popl %edx");
+    System.out.println("cmpl %edx, %eax");
+    out.write("popl %eax\n");
+    out.write("popl %edx\n");
+    out.write("cmpl %edx, %eax\n");
+    String elsym = "DOEND_" + dowhiles.peek();
+    if (comp_op.toString().equals("==")) {
+        System.out.println("je " + elsym);
+        out.write("je " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("!=")) {
+        System.out.println("jne " + elsym);
+        out.write("jne " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<")) {
+        System.out.println("jl " + elsym);
+        out.write("jl " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">")) {
+        System.out.println("jg " + elsym);
+        out.write("jg " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<=")) {
+        System.out.println("jle " + elsym);
+        out.write("jle " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">=")) {
+        System.out.println("jge " + elsym);
+        out.write("jge " + elsym + "\n");
+    }
+    System.out.println("jmp DO_" + dowhiles.peek());
+    System.out.println(elsym + ":");
+    out.write("jmp DO_" + dowhiles.pop() + "\n");
+    out.write(elsym + ":\n");
+    :}PARAR 
+| FOR PARAL assignment SEMI {:
+    dowhiles.push(ncount);
+    ncount++;
+    String ifsym = "FOR_" + dowhiles.peek();
+    System.out.println(ifsym + ":");
+    out.write(ifsym + ":\n");
+    :} condition:comp_op SEMI {:
+    String ifsym = "FOR_" + dowhiles.peek();
+    String elsym = "FOREND_" + dowhiles.peek();
+    System.out.println("popl %eax");
+    System.out.println("popl %edx");
+    System.out.println("cmpl %edx, %eax");
+    out.write("popl %eax\n");
+    out.write("popl %edx\n");
+    out.write("cmpl %edx, %eax\n");
+    if (comp_op.toString().equals("==")) {
+        System.out.println("je " + elsym);
+        out.write("je " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("!=")) {
+        System.out.println("jne " + elsym);
+        out.write("jne " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<")) {
+        System.out.println("jl " + elsym);
+        out.write("jl " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">")) {
+        System.out.println("jg " + elsym);
+        out.write("jg " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals("<=")) {
+        System.out.println("jle " + elsym);
+        out.write("jle " + elsym + "\n");
+    }
+    else if (comp_op.toString().equals(">=")) {
+        System.out.println("jge " + elsym);
+        out.write("jge " + elsym + "\n");
+    }
+    :} assignment PARAR instruction {:
+    System.out.println("jmp FOR_" + dowhiles.peek());
+    System.out.println("FOREND_" + dowhiles.peek() + ":");
+    out.write("jmp FOR_" + dowhiles.peek() + "\n");
+    out.write("FOREND_" + dowhiles.pop() + ":\n");
+    :}
+;
+
+jump_instruction::=  
+RETURN expression {:
+    System.out.println("popl %eax");
+    System.out.println("leave");
+    System.out.println("ret");
+    out.write("popl %eax\n");
+    out.write("leave\n");
+    out.write("ret\n");
+    shouldRet = false;:} SEMI 
+;
+
+condition ::=  
+expression comparison_operator:comp_op expression {:RESULT = comp_op;:}
+;
+
+comparison_operator ::=  
+EGAL {:RESULT = "==";:} // ==
+| DIFF {:RESULT = "!=";:} // !=
+| INF  {:RESULT = "<";:}// <
+| SUP  {:RESULT = ">";:}// >
+| INFEQUAL {:RESULT = "<=";:}// <=
+| SUPEQUAL {:RESULT = ">=";:}// >=
+;
+
+expression ::=  
+expression_additive 
+| expression SHIFTLEFT expression_additive {:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("shll %eax");
+    System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("shll %eax\n");
+    out.write("pushl %eax\n");
+:} //  Compute expression
+| expression SHIFTRIGHT expression_additive {:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("shrl %eax");
+    System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("shrl %eax\n");
+    out.write("pushl %eax\n");
+:} // Compute expression
+;
+
+expression_additive ::=  
+expression_multiplicative 
+| expression_additive PLUS expression_multiplicative // Compute expression
+{:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("addl %ecx, %eax");
+    System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("addl %ecx, %eax\n");
+    out.write("pushl %eax\n");
+:}
+| expression_additive MINUS expression_multiplicative // Compute expression
+{:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("subl %ecx, %eax");
+    System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("subl %ecx, %eax\n");
+    out.write("pushl %eax\n");
+:}
+;
+
+expression_multiplicative ::=  
+unary_expression
+| expression_multiplicative MULTI unary_expression {:
+     System.out.println("popl %ecx");
+     System.out.println("popl %eax");
+     System.out.println("mull %ecx");
+     System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("mull %ecx\n");
+    out.write("pushl %eax\n");
+:}
+| expression_multiplicative DIV unary_expression {:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("cltd");
+    System.out.println("cqo");
+    System.out.println("idivl %ecx");
+    System.out.println("pushl %eax");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("cltd\n");
+    out.write("cqo\n");
+    out.write("idivl %ecx\n");
+    out.write("pushl %eax\n");
+:}
+| expression_multiplicative MODULO unary_expression {:
+    System.out.println("popl %ecx");
+    System.out.println("popl %eax");
+    System.out.println("cltd");
+    System.out.println("cqo");
+    System.out.println("idivl %ecx");
+    System.out.println("pushl %edx");
+    out.write("popl %ecx\n");
+    out.write("popl %eax\n");
+    out.write("cltd\n");
+    out.write("cqo\n");
+    out.write("idivl %ecx\n");
+    out.write("pushl %edx\n");
+:}
+;
+
+unary_expression::=  
+expression_postfixee
+| MINUS unary_expression{:
+    System.out.println("popl %edx");
+    System.out.println("movl $0, %eax");
+    System.out.println("subl %edx, %eax");
+    System.out.println("pushl %eax");
+    out.write("popl %edx\n");
+    out.write("movl $0, %eax\n");
+    out.write("subl %edx, %eax\n");
+    out.write("pushl %eax\n");
+    :}
+;
+
+expression_postfixee ::=  
+primary_expression
+| IDENT:id PARAL argument_expression_list PARAR {:
+    if(id.toString().equals("printd")) {
+        System.out.println("popl %eax");
+        System.out.println("movl %eax, (%esp)");
+        out.write("popl %eax\n");
+        out.write("movl %eax, (%esp)\n");
+        System.out.println("call _" + id.toString());
+        out.write("call _" + id.toString() + "\n");
+        System.out.println("popl %edx");
+        out.write("popl %edx\n");
+        System.out.println("pushl %eax");
+        out.write("pushl %eax\n");
+    } else {
+        System.out.println("call _" + id.toString());
+        out.write("call _" + id.toString() + "\n");
+        for(int i = 0; i < globalMaps.get(id.toString()).vnum; i++) {
+            System.out.println("popl %edx");
+            out.write("popl %edx\n");
+        }
+        System.out.println("pushl %eax");
+        out.write("pushl %eax\n");
+    }
+:}
+| IDENT:id PARAL PARAR {:
+    System.out.println("call _" + id.toString());
+    out.write("call _" + id.toString() + "\n");
+    for(int i = 0; i < globalMaps.get(id.toString()).vnum; i++) {
+    	System.out.println("popl %edx");
+        out.write("popl %edx\n");
+    }
+    System.out.println("pushl %eax");
+    out.write("pushl %eax\n");
+:}
+;
+
+argument_expression_list::=  
+expression
+| argument_expression_list COMMA expression 
+;
+
+primary_expression ::=  
+IDENT:id {:
+    if(functionMaps.get(fname.peek()).containsKey(id.toString())){
+        int tof = functionMaps.get(fname.peek()).get(id.toString()).offset;
+        System.out.println("pushl " + tof + "(%ebp)");
+        out.write("pushl " + tof + "(%ebp)\n");
+    } else {
+        int tof = globalMaps.get(id.toString()).offset;
+        System.out.println("pushl " + tof + "(%ebx)");
+        out.write("pushl " + tof + "(%ebx)\n");
+    }
+    
+:}
+| CONST_INT:ci {:
+    System.out.println("pushl $" + ci);
+    out.write("pushl $" + ci + "\n");
+:}
+| CONST_STRING {:
+    System.out.println("pushl $15");
+    out.write("pushl $15\n");
+:}
+| PARAL expression PARAR
+;
